@@ -1,0 +1,170 @@
+def audio(self):
+        self.audio_done = False
+
+        while True:
+            if self.audio_done == True:
+                print("audio off")
+                print(f'time:{time.time()-self.start_time}')
+                break
+
+            if time.time() - self.start_time > 1 and self.audio_done == False:
+
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+                # Recording parameters
+                FORMAT = pyaudio.paInt16
+                CHANNELS = 1
+                RATE = 44100
+                CHUNK = 1024
+                RECORD_SECONDS = self.time_control.value()
+
+                # Initialize recording object
+                p = pyaudio.PyAudio()
+
+                # Open audio stream
+                stream = p.open(format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                input=True,
+                                frames_per_buffer=CHUNK)
+                print("================================================")
+                print(
+                    f"record second:{RECORD_SECONDS} \n threshold:{self.threshold_control.value()}")
+                print("Recording...")
+
+                frames = []
+
+                # Record audio data
+                for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+                    data = stream.read(CHUNK)
+                    frames.append(data)
+
+                print("Recording finished.")
+
+                # Close audio stream
+                stream.stop_stream()
+                stream.close()
+
+                # Close recording object
+                p.terminate()
+
+                # Convert recorded data to a numpy array
+                mic_audio = np.frombuffer(b''.join(frames), dtype=np.int16)
+                # Convert integers to floats and normalize
+                mic_audio = mic_audio.astype(np.float32) / 32767.0
+
+                # Apply pre-emphasis to the microphone audio
+                pre_emphasized_audio = np.append(
+                    mic_audio[0], mic_audio[1:] - 0.97 * mic_audio[:-1])
+
+                # Apply noise reduction using spectral subtraction
+                reduced_audio = nr.reduce_noise(y=pre_emphasized_audio, sr=RATE)
+
+                # Calculate MFCCs of the noise-reduced audio
+                mic_mfccs_reduced = librosa.feature.mfcc(
+                    y=reduced_audio, sr=RATE, n_mfcc=13)
+
+                # Extract the frequency range from 100 to 5000 Hz
+                min_freq = 800
+                max_freq = 4500
+                min_idx = int(min_freq * CHUNK / RATE)
+                max_idx = int(max_freq * CHUNK / RATE)
+                mic_mfccs_reduced = mic_mfccs_reduced[:, min_idx:max_idx]
+
+                # Plot Mel-frequency cepstral coefficients (MFCCs) of the microphone audio 繪圖用 之後可刪
+                mel_spec = librosa.feature.melspectrogram(y=reduced_audio, sr=RATE)
+                mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+                plt.figure(figsize=(10, 6))
+                librosa.display.specshow(
+                    mel_spec_db,  sr=RATE, hop_length=CHUNK, x_axis='time', y_axis='mel')
+                plt.axis('off')
+                # plt.show()
+                # Save the image as mel_spectrogram.png
+                plt.savefig('mel_spectrogram.png', bbox_inches='tight', pad_inches=0)
+                plt.close()
+
+                # Load the image
+                # image_path = r"C:\\Users\\chenkayyz\\OneDrive - Garmin\\tryfre\\src\\500_1500.png"
+                img = cv2.imread('mel_spectrogram.png')
+
+                # Convert the image to grayscale
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+                # Invert the grayscale image (black to white, white to gray)
+                inverted_gray = cv2.bitwise_not(gray)
+
+                # Apply edge detection
+                edges = cv2.Canny(inverted_gray, threshold1=100,
+                                threshold2=250, apertureSize=3)
+
+                # Use the Hough Line Transform to detect lines
+                lines = cv2.HoughLines(edges, 1, np.pi / 180,
+                                    threshold=self.threshold_control.value())
+
+                # Initialize counters for slopes
+                slope_0_count = 0
+                slope_1_count = 0
+                slope_minus_1_count = 0
+
+                # Iterate through the detected lines and calculate slopes
+                if lines is not None:
+                    for line in lines:
+                        r, theta = line[0]
+                        x0 = r * np.cos(theta)
+                        y0 = r * np.sin(theta)
+                        x1 = int(x0 - 1000 * np.sin(theta))
+                        y1 = int(y0 + 1000 * np.cos(theta))
+                        x2 = int(x0 + 1000 * np.sin(theta))
+                        y2 = int(y0 - 1000 * np.cos(theta))
+                        # 將線的顏色更改為紅色，寬度更改為2像素
+                        cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        # Calculate the slope
+                        if np.sin(theta) == 0:
+                            slope = float('inf')
+                        else:
+                            slope = np.cos(theta) / np.sin(theta)
+
+                        # Apply your logic to count slopes
+                        if abs(slope) > 5:
+                            continue
+                        elif slope == float('inf'):
+                            continue
+                        elif abs(slope) < 0.07:
+                            slope_0_count += 1
+                        elif 0.07 < slope < 4:
+                            slope_1_count += 1
+                        elif -0.07 > slope > -4:
+                            slope_minus_1_count += 1
+
+                    # Determine which category has the most counts using max()
+                    max_count_category = max(
+                        slope_0_count, slope_1_count, slope_minus_1_count)
+
+                    if slope_0_count == slope_minus_1_count == slope_1_count == 0:
+                        print("can not classify")
+                        self.soundDirection = 'none'
+                        self.result_display.setText("can not classify")
+                    elif max_count_category == slope_0_count:
+                        print("single")
+                        self.soundDirection = '1'
+                        # self.result_display.setText("single")
+
+                    elif max_count_category == slope_1_count:
+                        print("up")
+                        self.soundDirection = '2'
+                        # self.result_display.setText("up")
+
+                    elif max_count_category == slope_minus_1_count:
+                        print("down")
+                        self.soundDirection = '3'
+                        # self.result_display.setText("down")
+
+                    else:
+                        print("No dominant category")
+                        # self.result_display.setText("No dominant category")
+
+                    # Display the statistics
+                    print(f"Slope 0 Count: {slope_0_count}")
+                    print(f"Slope 1 Count: {slope_1_count}")
+                    print(f"Slope -1 Count: {slope_minus_1_count}")
+                    print("================================================")
